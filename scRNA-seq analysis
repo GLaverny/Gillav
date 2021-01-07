@@ -54,4 +54,124 @@ Gem <- RunPCA(Gem, npcs = 10, verbose = FALSE)
 Gem <- FindNeighbors(Gem, reduction = "pca", dims = 1:10)
 Gem <- FindClusters(Gem, resolution = 0.8)
 Gem <- RunTSNE(Gem, dims.use = 1:10, reduction.use = "pca", perplexity = 30)
-```
+
+#Identify the DEG in vehicle vs. Gem-72
+Idents(Gem)<-"test"
+Gem_DE_genes <-data.frame()
+DefaultAssay(Gem) <- "RNA"
+Gem$celltype.treat <- paste(Idents(Gem), Gem$orig.ident, sep = "_")
+Idents(Gem) <- "celltype.treat"
+new.cluster.ids <- levels(Gem@active.ident)[1:20]
+new.cluster.ids2 <- levels(Gem@active.ident)[21:40]
+for (i in 1:(length(new.cluster.ids)))
+     {
+  
+  z = FindMarkers(Gem, ident.1 = sort(new.cluster.ids2)[[i]], ident.2 = sort(new.cluster.ids)[[i]], verbose = TRUE)
+  z$gene <-rownames(z)
+  z$NCBI_id <- mapIds(org.Mm.eg.db, z$gene, 'ENTREZID', 'SYMBOL')
+z$cluster <- sort(levels(Gem@meta.data[["test"]]))[[i]]
+Gem_DE_genes <- rbind(Gem_DE_genes, z)
+}
+
+#Determine pathways of the DE genes Gem-72 vs. Vehicle in the stroma
+UP <- Gem_DE_genes[Gem_DE_genes$p_val<0.05 & Gem_DE_genes$avg_logFC>0,] 
+DOWN <- Gem_DE_genes[Gem_DE_genes$p_val<0.05 & Gem_DE_genes$avg_logFC<0,] 
+cluster <- c("Stroma-A", "Stroma-B", "Stroma-C", "Stroma-D")
+
+for (i in 1:length(cluster)) 
+  {
+  Gene_up <- UP[UP$cluster==cluster[[i]], ]
+    if (is.null(Gene_up) == F) {
+Reactome_DE_Gem_up[[i]] <- enrichPathway(Gene_up$NCBI_id, organism = "mouse", pvalueCutoff=0.05, readable=T, pAdjustMethod = "fdr", universe,  minGSSize = 10, maxGSSize = 500, qvalueCutoff = 0.05)
+Reactome_DE_Gem_up[[i]]<-setReadable(Reactome_DE_Gem_up[[i]], org.Mm.eg.db, keyType = "ENTREZID")
+}
+  
+else{
+
+names(Reactome_DE_Gem_up[[i]])<-cluster[[i]]}
+
+Gene_down <- DOWN[DOWN$cluster==cluster[[i]], ] 
+if(is.null(Gene_down) == F) {
+#Reactome pathway up and down
+Reactome_DE_Gem_down[[i]] <- enrichPathway(Gene_down$NCBI_id, organism = "mouse", pvalueCutoff=0.05, readable=T, pAdjustMethod = "fdr", universe,  minGSSize = 10, maxGSSize = 500, qvalueCutoff = 0.05)
+Reactome_DE_Gem_down[[i]]<-setReadable(Reactome_DE_Gem_down[[i]], org.Mm.eg.db, keyType = "ENTREZID")
+}
+}
+names(Reactome_DE_Gem_up)<-cluster
+names(Reactome_DE_Gem_down)<-cluster
+
+Table<-data.frame()
+for (i in 1:4)  {
+  Reactome_DE_Gem_down[[i]]@result$Cluster <- cluster[[i]]
+  tobind <- Reactome_DE_Gem_down[[i]]@result %>% top_n(n = 10, wt = -p.adjust)
+  Table <-rbind(Table, tobind)
+}
+
+#Generation of the volcano plots
+list=list("Stroma-A", "Stroma-B",  "Stroma-C","Stroma-D")
+list_num<- list()
+for (i in 1:length(list)) {
+  
+Gem_DE_genes_1<-Gem_DE_genes[Gem_DE_genes$cluster==list[i], ]
+rownames(Gem_DE_genes_1) <- Gem_DE_genes_1$gene
+Gem_DE_genes_1$avg_logFC2 <- Gem_DE_genes_1$avg_logFC/log(2)
+list_num[i]<- nrow(Gem_DE_genes_1)
+  keyvals.shape <- ifelse(rownames(Gem_DE_genes_1) %in% Venn[,1], "mediumblue", "grey")
+  names(keyvals.shape)[keyvals.shape == "mediumblue"] <- "ECM"
+  names(keyvals.shape)[keyvals.shape == "grey"] <- "other"
+
+p1[[i]] <- EnhancedVolcano(toptable = Gem_DE_genes_1, lab = rownames(Gem_DE_genes_1), x = "avg_logFC2", y = "p_val",     xlim = c(-2, 2), ylim = c(1, -log10(10e-20)), title = NULL, pCutoff = 10e-2, FCcutoff = 0.58, pointSize = 1.0, labSize = 0, legendPosition = "none",  colCustom = keyvals.shape, selectLab = c(Venn), subtitle = NULL, caption = NULL, gridlines.major = 0, gridlines.minor = 0, drawConnectors = FALSE, widthConnectors = 0.25) + theme(axis.title = element_text(size=8), axis.text.x = element_text(size=8), axis.text.y = element_text(size=8, hjust = 0.5, vjust = 0.5), title = element_text(size=8), axis.line = element_line(size=0.5), axis.ticks = element_line(size=0.5), axis.ticks.length=unit(.1, "cm"), plot.margin=unit(c(0,0,0,0),"cm")) 
+ggsave(filename = paste0("Fig2D_", list[i],".pdf"), plot = p1[[i]], dpi = 300, width = 4, height = 3, units = "cm" )
+}
+
+#Identification of the signature
+Signatures<-data.frame()
+
+for (i in 1:length(levels(Gem))) 
+{
+z <- FindConservedMarkers(Gem,ident.1 = sort(levels(Gem))[i], grouping.var="orig.ident", logfc.threshold = 0.25, min.pct = 0.5, verbose = T, only.pos = T)
+z$gene <-rownames(z)
+  z$NCBI_id <- mapIds(org.Mm.eg.db, z$gene, 'ENTREZID', 'SYMBOL')
+z$cluster <- sort(levels(Gem))[[i]]
+Signatures<- rbind(Signatures, z)
+}
+
+# subclustering LSCmed
+
+LSCmed <- subset(Gem, idents=c("Luminal-C1","Luminal-C2"))
+LSCmed <- FindVariableFeatures(LSCmed, selection.method = "vst", nfeatures = 2000)
+DefaultAssay(LSCmed) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+LSCmed <- ScaleData(LSCmed, verbose = FALSE)
+LSCmed <- RunPCA(LSCmed, npcs = 10, verbose = FALSE)
+
+# t-SNE and Clustering
+LSCmed <- FindNeighbors(LSCmed, reduction = "pca", dims = 1:10)
+LSCmed <- FindClusters(LSCmed, resolution = 0.8)
+LSCmed <- RunTSNE(LSCmed, dims.use = 1:10, reduction.use = "pca", perplexity = 30)
+LSCmed <- subset(LSCmed, idents = c(0:7))
+
+# Signaures of Luminal-C sub-clustering 
+Signatures_LSCmed<-data.frame()
+
+for (i in 1:length(levels(LSCmed))) 
+{
+z <- FindConservedMarkers(LSCmed,ident.1 = sort(levels(LSCmed))[i], grouping.var="orig.ident", logfc.threshold = 0.25, min.pct = 0.5, verbose = T, only.pos = T)
+z$gene <-rownames(z)
+  z$NCBI_id <- mapIds(org.Mm.eg.db, z$gene, 'ENTREZID', 'SYMBOL')
+z$cluster <- sort(levels(LSCmed))[[i]]
+if (ncol(z)==15) {
+Signatures_LSCmed<- rbind(Signatures_LSCmed, z)
+}
+else { SC6=z
+}
+}
+
+# DEG in remaining Luminal-C
+LSCmed$celltype.test <- paste(Idents(LSCmed), LSCmed$orig.ident, sep = "_")
+Idents(LSCmed) <- "celltype.test"
+  z <- FindMarkers(LSCmed, ident.1 ="Luminal C_Gem72", ident.2 =  "Luminal C_Ctl", verbose = TRUE)
+  z$gene <-rownames(z)
+z$NCBI_id <- mapIds(org.Mm.eg.db, z$gene, 'ENTREZID', 'SYMBOL')
+
