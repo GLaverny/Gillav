@@ -423,3 +423,152 @@ name <- paste0("HiF_finalFigure/old/correlation/", colnames(graph)[[i]],"_PTEN.e
 ggsave(filename = name, units = "mm", height = 45, width = 45, dpi=300)  
 }
 
+#################################
+#Trajectory inference using dyno
+#Author : Celine Keime
+#Date : 2020/08/24
+#################################
+
+
+
+#load libraries
+###############
+
+library(dyno)
+library(tidyverse)
+library(dplyr)
+library(Seurat)
+
+
+
+#parameters 
+#############
+
+#path to directory containing barcodes.tsv.gz, features.tsv.gz and matrix.mtx.gz files
+data.dir="S19035_S19177_S19192/outs/filtered_feature_bc_matrix"
+
+#detection threshold (ie min UMI number to consider a gene is expressed)
+detection = 5
+
+#include genes detected in at least this number of cells
+min.cells = 10
+
+#include cells where at least this number of genes are detected
+min.features = 100
+
+#include cells with unique gene count less than this number
+max.features=5000
+
+#include cells with less than this percentage of mitochondrial reads
+max.percent.mt = 20
+
+#selected barcodes
+clustres = read.table("S19035_S19177_S19192/outs/analysis/clustering/graphclust/clusters.csv",sep=",", header=TRUE, stringsAsFactors = FALSE)
+clustres.selectedbarcodes = clustres[clustres$Cluster==10 | clustres$Cluster==12 | clustres$Cluster==20,  ]
+
+#grouping labels
+grouping_labels = c("3_9m","4_15m","2_6m","1_3m")
+names(grouping_labels) = as.character(1:4)
+
+#trajectory method
+trajectory_method="slingshot"
+
+#milestone id that is at the start of the trajectory
+root_milestone_id = "3"
+
+#size of dots representing cells
+size_cells = 1
+
+
+
+#data preprocessing
+###################
+
+#read 10X data
+data_10x = Read10X(data.dir = data.dir)
+
+#create Seurat object
+data = CreateSeuratObject(counts=data_10x, min.cells=min.cells, min.features=min.features)
+
+#percentage mitochondrial reads
+data[["percent.mt"]] <- PercentageFeatureSet(data, pattern = "^mt-")
+
+#filter data to exclude cells with more than max.percent.mt mitochondrial reads
+#and to keep a number of features between min.features and max.features
+data = subset(data, subset = nFeature_RNA > min.features & nFeature_RNA < max.features & percent.mt < max.percent.mt)
+
+#normalize data
+data = NormalizeData(data, normalization.method = "LogNormalize")
+
+#filter data to exclude genes detected (with UMI > detection) in less than min.cells cells
+keptgenes = which(rowSums( as.matrix(data@assays$RNA@counts) >= detection) >=  min.cells )
+data = subset(data, features=keptgenes)
+
+#retain only selected cells
+selectedbarcodes = clustres.selectedbarcodes$Barcode
+data = subset(data, cells=selectedbarcodes)
+
+
+
+#data preparation for dyno
+##########################
+
+#genes in column
+data_counts = Matrix::t(as(as.matrix(data@assays$RNA@counts), 'sparseMatrix'))/log(2)
+data_expression = Matrix::t(as(as.matrix(data@assays$RNA@data), 'sparseMatrix'))/log(2)
+
+dataset = wrap_expression(
+  counts = data_counts, #counts values of genes (columns) within cells (rows)
+  expression = data_expression #normalized expression values of genes (columns) within cells (rows)
+)
+
+#add grouping information according to sample number 
+data_grouping = substr(rownames(data_counts),18,18) #sample number 
+#use grouping_labels to replace sample number
+for (l in unique(data_grouping)){
+  data_grouping[data_grouping==l] = grouping_labels[l]
+}
+dataset = add_grouping(
+  dataset,
+  grouping = data_grouping
+)
+
+  
+  
+#trajectory inference
+#####################
+
+set.seed(1)
+model = infer_trajectory(dataset, method=trajectory_method)
+#rooting
+model = model %>% add_root(root_milestone_id = root_milestone_id)
+
+
+
+#plot trajectory 
+#################
+
+#colored by samples
+plot_dimred(model, grouping = dataset$grouping, size_cells = size_cells)
+
+
+#colored by clusters
+data_grouping_cluster=NULL #grouping information according to cluster number
+for (b in rownames(data_counts)){
+  data_grouping_cluster = append(data_grouping_cluster, as.character(clustres.selectedbarcodes$Cluster[clustres.selectedbarcodes$Barcode==b]))
+}
+names(data_grouping_cluster) = rownames(data_counts)
+
+plot_dimred(model, grouping = data_grouping_cluster, size_cells = size_cells)
+
+
+  
+  
+#calculate feature importance for the whole trajectory
+######################################################
+
+overall_feature_importances = dynfeature::calculate_overall_feature_importance(model, expression_source = dataset$expression)
+  
+#file containing feature importance
+write.table(overall_feature_importances, file="overall_feature_importances.txt", quote=FALSE, sep="\t", row.names=FALSE)
+
